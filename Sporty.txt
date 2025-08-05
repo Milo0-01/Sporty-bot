@@ -1,0 +1,141 @@
+import requests
+from bs4 import BeautifulSoup
+import time
+import logging
+import sys
+import os
+
+# ----------- CONFIGURATION -----------
+
+# URL to check for latest bot version code - Replace with your own raw file URL after uploading to GitHub
+UPDATE_CHECK_URL = 'https://raw.githubusercontent.com/yourusername/yourrepo/main/sportybet_bot.py'
+
+CHECK_UPDATE_INTERVAL = 3600  # seconds (1 hour)
+FETCH_ODDS_INTERVAL = 600     # seconds (10 minutes)
+
+# Odds threshold for highlighting (adjust as needed)
+ODDS_THRESHOLD = 2.0
+
+# Sportybet virtual football mobile site odds page
+SPORTYBET_VIRTUAL_FOOTBALL_URL = 'https://m.sportybet.com/ng/sports/virtuals/virtual-football'
+
+LOG_FILENAME = 'sportybet_bot.log'
+
+# ----------- SETUP LOGGING -----------
+
+logging.basicConfig(
+    filename=LOG_FILENAME,
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s'
+)
+
+# ----------- SELF UPDATE FUNCTION -----------
+
+def fetch_latest_code():
+    try:
+        r = requests.get(UPDATE_CHECK_URL)
+        if r.status_code == 200:
+            return r.text
+        else:
+            logging.error(f"Failed to fetch latest code, status {r.status_code}")
+            return None
+    except Exception as e:
+        logging.error(f"Error fetching latest code: {e}")
+        return None
+
+def update_self(new_code):
+    try:
+        script_path = os.path.realpath(__file__)
+        with open(script_path, 'w', encoding='utf-8') as f:
+            f.write(new_code)
+        logging.info("Bot updated successfully, restarting...")
+        # Restart script
+        os.execv(sys.executable, ['python'] + sys.argv)
+    except Exception as e:
+        logging.error(f"Error updating self: {e}")
+
+def check_for_update():
+    logging.info("Checking for bot update...")
+    latest_code = fetch_latest_code()
+    if not latest_code:
+        logging.info("No update fetched.")
+        return
+    script_path = os.path.realpath(__file__)
+    with open(script_path, 'r', encoding='utf-8') as f:
+        current_code = f.read()
+    if latest_code != current_code:
+        logging.info("New version found, updating bot...")
+        update_self(latest_code)
+    else:
+        logging.info("Bot is up to date.")
+
+# ----------- SPORTYBET ODDS SCRAPER -----------
+
+def fetch_sportybet_virtual_football_odds():
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+        r = requests.get(SPORTYBET_VIRTUAL_FOOTBALL_URL, headers=headers)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'html.parser')
+
+        # Find match blocks — inspect site structure as it can change
+        matches = soup.find_all('div', class_='event-list__event')  
+        results = []
+        for match in matches:
+            teams = match.find_all('span', class_='event-list__team-name')
+            odds_spans = match.find_all('span', class_='event-list__odds')
+            if len(teams) == 2 and len(odds_spans) >= 3:
+                team1 = teams[0].text.strip()
+                team2 = teams[1].text.strip()
+
+                # Extract odds - usually 3 odds: team1 win, draw, team2 win
+                odds1 = float(odds_spans[0].text.strip())
+                odds_draw = float(odds_spans[1].text.strip())
+                odds2 = float(odds_spans[2].text.strip())
+
+                results.append({
+                    'match': f"{team1} vs {team2}",
+                    'odds': {
+                        team1: odds1,
+                        'Draw': odds_draw,
+                        team2: odds2
+                    }
+                })
+        return results
+
+    except Exception as e:
+        logging.error(f"Error fetching Sportybet odds: {e}")
+        return None
+
+# ----------- MAIN LOOP -----------
+
+def main():
+    logging.info("Sportybet Bot Started.")
+    last_update_check = 0
+    while True:
+        now = time.time()
+
+        # Check for update every hour
+        if now - last_update_check > CHECK_UPDATE_INTERVAL:
+            check_for_update()
+            last_update_check = now
+
+        odds_data = fetch_sportybet_virtual_football_odds()
+        if odds_data:
+            print(f"\n--- Sportybet Virtual Football Odds ({time.strftime('%Y-%m-%d %H:%M:%S')}) ---")
+            logging.info("Fetched Sportybet odds successfully.")
+            for match in odds_data:
+                print(f"Match: {match['match']}")
+                for outcome, odd in match['odds'].items():
+                    mark = '<< BET >>' if odd >= ODDS_THRESHOLD else ''
+                    print(f"  {outcome}: {odd} {mark}")
+                print()
+        else:
+            logging.warning("Failed to fetch odds.")
+
+        time.sleep(FETCH_ODDS_INTERVAL)
+
+if __name__ == "__main__":
+    main()
